@@ -1,64 +1,79 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter } from 'recharts';
-import { Search, Users, Building, DollarSign, Target, Network, AlertCircle, CheckCircle, TrendingUp, Filter } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, LineChart, Line } from 'recharts';
+import { Search, Users, Building, DollarSign, Target, Network, AlertCircle, CheckCircle, TrendingUp, Filter, FileText, RefreshCw } from 'lucide-react';
 import Papa from 'papaparse';
 
 const HubSpotRelationshipMapper = () => {
   const [deals, setDeals] = useState([]); // Tyler deals - comprehensive master set
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [activeStrategy, setActiveStrategy] = useState('overview');
   const [searchTerm, setSearchTerm] = useState('');
+  const [dataRefreshTime, setDataRefreshTime] = useState(null);
 
   // Load and parse CSV data
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
+      setError(null);
+      
       try {
-        // Load Tyler deals data (updated to use tylerdeals2.csv)
-        let tylerDealsData;
-        try {
-          tylerDealsData = await window.fs.readFile('tylerdeals2.csv', { encoding: 'utf8' });
-        } catch (e) {
-          console.error('Error loading tylerdeals2.csv:', e);
-          throw new Error('Failed to load tylerdeals2.csv');
+        // Load Tyler deals data from public folder
+        const dealsResponse = await fetch('/tylerdeals2.csv');
+        if (!dealsResponse.ok) {
+          throw new Error(`Failed to load deals data: ${dealsResponse.status} ${dealsResponse.statusText}`);
         }
-
-        const tylerDealsParsed = Papa.parse(tylerDealsData, {
+        const dealsText = await dealsResponse.text();
+        
+        // Load companies data from public folder
+        const companiesResponse = await fetch('/hubspot-crm-exports-tyler-companies-2025-05-29.csv');
+        if (!companiesResponse.ok) {
+          throw new Error(`Failed to load companies data: ${companiesResponse.status} ${companiesResponse.statusText}`);
+        }
+        const companiesText = await companiesResponse.text();
+        
+        // Parse deals CSV
+        const dealsParsed = Papa.parse(dealsText, {
           header: true,
           dynamicTyping: true,
           skipEmptyLines: true,
+          transformHeader: (header) => header.trim(),
           complete: function(results) {
+            console.log(`Deals parsed: ${results.data.length} records`);
             if (results.errors.length > 0) {
-              console.error("Errors parsing tylerdeals2.csv:", results.errors);
+              console.warn("Errors parsing deals:", results.errors);
             }
           }
         });
-
-        // Load companies data (updated filename)
-        let companiesData;
-        try {
-          companiesData = await window.fs.readFile('hubspot-crm-exports-tyler-companies-2025-05-29.csv', { encoding: 'utf8' });
-        } catch (e) {
-          console.error('Error loading hubspot-crm-exports-tyler-companies-2025-05-29.csv:', e);
-          throw new Error('Failed to load hubspot-crm-exports-tyler-companies-2025-05-29.csv');
-        }
-
-        const companiesParsed = Papa.parse(companiesData, {
+        
+        // Parse companies CSV
+        const companiesParsed = Papa.parse(companiesText, {
           header: true,
           dynamicTyping: true,
           skipEmptyLines: true,
+          transformHeader: (header) => header.trim(),
           complete: function(results) {
+            console.log(`Companies parsed: ${results.data.length} records`);
             if (results.errors.length > 0) {
-              console.error("Errors parsing hubspot-crm-exports-tyler-companies-2025-05-29.csv:", results.errors);
+              console.warn("Errors parsing companies:", results.errors);
             }
           }
         });
-
-        setDeals(tylerDealsParsed.data || []);
+        
+        // Set the data
+        setDeals(dealsParsed.data || []);
         setCompanies(companiesParsed.data || []);
+        setDataRefreshTime(new Date());
+        
+        console.log('Data loaded successfully:', {
+          deals: dealsParsed.data?.length || 0,
+          companies: companiesParsed.data?.length || 0
+        });
+        
       } catch (error) {
-        console.error('Error in loadData process:', error.message);
+        console.error('Error loading data:', error);
+        setError(error.message);
         setDeals([]);
         setCompanies([]);
       } finally {
@@ -66,12 +81,7 @@ const HubSpotRelationshipMapper = () => {
       }
     };
 
-    if (window.fs) {
-      loadData();
-    } else {
-      console.error('window.fs is not available. Ensure you are in an Electron environment or similar.');
-      setLoading(false);
-    }
+    loadData();
   }, []);
 
   // Strategy 1: Enhanced Relationship Mapping - Direct ID based
@@ -79,6 +89,7 @@ const HubSpotRelationshipMapper = () => {
     if (!deals.length || !companies.length) return [];
 
     const mappings = [];
+    let unmappedCount = 0;
     
     deals.forEach(deal => {
       const primaryCompanyId = deal['Associated Company IDs (Primary)'];
@@ -90,20 +101,28 @@ const HubSpotRelationshipMapper = () => {
         if (company) {
           mappings.push({
             dealId: deal['Record ID'],
-            dealName: deal['Deal Name'],
+            dealName: deal['Deal Name'] || 'Unnamed Deal',
             companyId: company['Record ID'],
-            companyName: company['Company name'],
+            companyName: company['Company name'] || 'Unnamed Company',
             relationship: 'primary',
             confidence: 100, // Direct ID match = 100% confidence
-            amount: deal['Budget'] || 0, // Always use Budget as specified
-            campaignBrand: deal['Campaign Brand'],
-            dealStage: deal['Deal Stage'],
-            pipeline: deal['Pipeline']
+            amount: parseFloat(deal['Budget']) || 0, // Always use Budget as specified
+            campaignBrand: deal['Campaign Brand'] || '',
+            dealStage: deal['Deal Stage'] || 'Unknown',
+            pipeline: deal['Pipeline'] || 'Unknown',
+            closeDate: deal['Close Date'],
+            createDate: deal['Create Date'],
+            isClosedWon: deal['Is Closed Won'] === true || (deal['Deal Stage'] && String(deal['Deal Stage']).toLowerCase().includes('won'))
           });
+        } else {
+          unmappedCount++;
         }
+      } else {
+        unmappedCount++;
       }
     });
 
+    console.log(`Direct ID Mapping: ${mappings.length} mapped, ${unmappedCount} unmapped`);
     return mappings;
   }, [deals, companies]);
 
@@ -113,8 +132,10 @@ const HubSpotRelationshipMapper = () => {
     
     companies.forEach(company => {
       const domain = company['Company Domain Name'];
-      if (domain) {
-        const rootDomain = domain.toLowerCase().replace(/^www\./, '').split('.').slice(-2).join('.');
+      if (domain && typeof domain === 'string' && domain.trim() !== '') {
+        const cleanDomain = domain.toLowerCase().replace(/^www\./, '').trim();
+        const rootDomain = cleanDomain.split('.').slice(-2).join('.');
+        
         if (!domainGroups[rootDomain]) {
           domainGroups[rootDomain] = [];
         }
@@ -125,23 +146,32 @@ const HubSpotRelationshipMapper = () => {
     const relationships = [];
     Object.entries(domainGroups).forEach(([domain, relatedCompanies]) => {
       if (relatedCompanies.length > 1) {
-        // Find the "parent" company (highest revenue or earliest created)
-        const parent = relatedCompanies.reduce((prev, curr) => {
-          const prevRevenue = prev['Total Revenue'] || 0;
-          const currRevenue = curr['Total Revenue'] || 0;
-          return currRevenue > prevRevenue ? curr : prev;
+        // Find the "parent" company (highest revenue or most deals)
+        const companiesWithMetrics = relatedCompanies.map(company => {
+          const dealCount = directIdMapping.filter(m => m.companyId === company['Record ID']).length;
+          const totalRevenue = parseFloat(company['Total Revenue']) || 0;
+          return { ...company, dealCount, totalRevenue };
+        });
+        
+        const parent = companiesWithMetrics.reduce((prev, curr) => {
+          // Prioritize by deal count, then by revenue
+          if (curr.dealCount > prev.dealCount) return curr;
+          if (curr.dealCount === prev.dealCount && curr.totalRevenue > prev.totalRevenue) return curr;
+          return prev;
         });
 
         relatedCompanies.forEach(company => {
           if (company['Record ID'] !== parent['Record ID']) {
             relationships.push({
               parentId: parent['Record ID'],
-              parentName: parent['Company name'],
+              parentName: parent['Company name'] || 'Unnamed Parent',
               childId: company['Record ID'],
-              childName: company['Company name'],
+              childName: company['Company name'] || 'Unnamed Child',
               confidence: 75,
               basis: 'domain',
-              domain: domain
+              domain: domain,
+              parentDealCount: parent.dealCount,
+              parentRevenue: parent.totalRevenue
             });
           }
         });
@@ -149,7 +179,7 @@ const HubSpotRelationshipMapper = () => {
     });
 
     return relationships;
-  }, [companies]);
+  }, [companies, directIdMapping]);
 
   // Strategy 3: Enhanced Brand-to-Company Attribution
   const brandMapping = useMemo(() => {
@@ -157,15 +187,19 @@ const HubSpotRelationshipMapper = () => {
     const brandCompanies = {};
     const brandDealCounts = {};
     const brandPipelines = {};
+    const brandStages = {};
+    const brandTimeSeries = {};
 
     deals.forEach(deal => {
       const brandsRaw = deal['Campaign Brand'];
       const brands = (brandsRaw && typeof brandsRaw === 'string') 
         ? brandsRaw.split(';').map(b => b.trim()).filter(b => b !== '') 
         : [];
-      const revenue = deal['Budget'] || 0; // Always use Budget
+      const revenue = parseFloat(deal['Budget']) || 0;
       const pipeline = deal['Pipeline'] || 'Unknown';
+      const stage = deal['Deal Stage'] || 'Unknown';
       const primaryCompanyId = deal['Associated Company IDs (Primary)'];
+      const closeDate = deal['Close Date'];
       
       brands.forEach(brand => {
         if (brand && typeof brand === 'string' && brand !== '') {
@@ -181,6 +215,21 @@ const HubSpotRelationshipMapper = () => {
           }
           brandPipelines[brand][pipeline] = (brandPipelines[brand][pipeline] || 0) + 1;
           
+          // Stage tracking
+          if (!brandStages[brand]) {
+            brandStages[brand] = {};
+          }
+          brandStages[brand][stage] = (brandStages[brand][stage] || 0) + 1;
+          
+          // Time series tracking
+          if (closeDate) {
+            const monthYear = new Date(closeDate).toISOString().slice(0, 7);
+            if (!brandTimeSeries[brand]) {
+              brandTimeSeries[brand] = {};
+            }
+            brandTimeSeries[brand][monthYear] = (brandTimeSeries[brand][monthYear] || 0) + revenue;
+          }
+          
           // Associate brand with primary company ID if available
           if (primaryCompanyId !== undefined && primaryCompanyId !== null && String(primaryCompanyId).trim() !== '') {
             if (!brandCompanies[brand]) {
@@ -192,11 +241,36 @@ const HubSpotRelationshipMapper = () => {
       });
     });
 
+    // Calculate brand metrics
+    const brandMetrics = Object.keys(brandRevenue).map(brand => {
+      const avgDealSize = brandRevenue[brand] / brandDealCounts[brand];
+      const companyCount = brandCompanies[brand]?.size || 0;
+      const stages = brandStages[brand] || {};
+      const wonDeals = Object.entries(stages)
+        .filter(([stage]) => stage.toLowerCase().includes('won'))
+        .reduce((sum, [, count]) => sum + count, 0);
+      const winRate = wonDeals / brandDealCounts[brand] * 100;
+      
+      return {
+        brand,
+        revenue: brandRevenue[brand],
+        dealCount: brandDealCounts[brand],
+        avgDealSize,
+        companyCount,
+        winRate,
+        pipelines: brandPipelines[brand] || {},
+        stages: stages
+      };
+    }).sort((a, b) => b.revenue - a.revenue);
+
     return { 
       brandRevenue, 
       brandCompanies, 
       brandDealCounts, 
       brandPipelines,
+      brandStages,
+      brandTimeSeries,
+      brandMetrics,
       totalBrands: Object.keys(brandRevenue).length,
       totalBrandRevenue: Object.values(brandRevenue).reduce((sum, rev) => sum + rev, 0)
     };
@@ -208,8 +282,9 @@ const HubSpotRelationshipMapper = () => {
     
     deals.forEach(deal => {
       const primaryCompanyId = deal['Associated Company IDs (Primary)'];
-      const dealRevenue = deal['Budget'] || 0; // Always use Budget
-      const dealStage = deal['Deal Stage'];
+      const dealRevenue = parseFloat(deal['Budget']) || 0;
+      const dealStage = deal['Deal Stage'] || 'Unknown';
+      const isClosedWon = deal['Is Closed Won'] === true || (dealStage && dealStage.toLowerCase().includes('won'));
       
       if (primaryCompanyId !== undefined && primaryCompanyId !== null && String(primaryCompanyId).trim() !== '') {
         const company = companies.find(c => String(c['Record ID']) === String(primaryCompanyId));
@@ -219,29 +294,33 @@ const HubSpotRelationshipMapper = () => {
           
           if (!companyDealAnalysis[companyId]) {
             companyDealAnalysis[companyId] = {
-              companyName: company['Company name'],
-              declaredRevenue: company['Total Revenue'] || 0,
+              companyName: company['Company name'] || 'Unnamed Company',
+              declaredRevenue: parseFloat(company['Total Revenue']) || 0,
               calculatedRevenue: 0,
               dealCount: 0,
               wonDeals: 0,
               openDeals: 0,
+              lostDeals: 0,
+              totalPotential: 0,
               deals: []
             };
           }
           
           companyDealAnalysis[companyId].calculatedRevenue += dealRevenue;
+          companyDealAnalysis[companyId].totalPotential += dealRevenue;
           companyDealAnalysis[companyId].dealCount += 1;
           companyDealAnalysis[companyId].deals.push({
-            name: deal['Deal Name'],
+            name: deal['Deal Name'] || 'Unnamed Deal',
             stage: dealStage,
-            revenue: dealRevenue
+            revenue: dealRevenue,
+            closeDate: deal['Close Date']
           });
           
-          if (dealStage && typeof dealStage === 'string' && dealStage.toLowerCase().includes('won')) {
+          if (isClosedWon) {
             companyDealAnalysis[companyId].wonDeals += 1;
-          } else if (dealStage && typeof dealStage === 'string' && 
-                     !dealStage.toLowerCase().includes('lost') && 
-                     !dealStage.toLowerCase().includes('won')) {
+          } else if (dealStage && dealStage.toLowerCase().includes('lost')) {
+            companyDealAnalysis[companyId].lostDeals += 1;
+          } else {
             companyDealAnalysis[companyId].openDeals += 1;
           }
         }
@@ -259,14 +338,18 @@ const HubSpotRelationshipMapper = () => {
         companyName: analysis.companyName,
         declaredRevenue: analysis.declaredRevenue,
         calculatedRevenue: analysis.calculatedRevenue,
+        totalPotential: analysis.totalPotential,
         variance,
         accuracy,
         dealCount: analysis.dealCount,
         wonDeals: analysis.wonDeals,
         openDeals: analysis.openDeals,
-        winRate: analysis.dealCount > 0 ? (analysis.wonDeals / analysis.dealCount) * 100 : 0
+        lostDeals: analysis.lostDeals,
+        winRate: analysis.dealCount > 0 ? (analysis.wonDeals / analysis.dealCount) * 100 : 0,
+        avgDealSize: analysis.dealCount > 0 ? analysis.calculatedRevenue / analysis.dealCount : 0,
+        deals: analysis.deals
       };
-    }).filter(item => item.calculatedRevenue > 0);
+    }).filter(item => item.calculatedRevenue > 0 || item.totalPotential > 0);
   }, [deals, companies]);
 
   // Combined relationship analysis
@@ -298,22 +381,23 @@ const HubSpotRelationshipMapper = () => {
   const filteredRelationships = useMemo(() => {
     if (!searchTerm) return combinedRelationships;
     
+    const lowerSearch = searchTerm.toLowerCase();
     return combinedRelationships.filter(rel => 
-      rel.dealName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rel.companyName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rel.parentName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rel.childName?.toLowerCase().includes(searchTerm.toLowerCase())
+      rel.dealName?.toLowerCase().includes(lowerSearch) ||
+      rel.companyName?.toLowerCase().includes(lowerSearch) ||
+      rel.parentName?.toLowerCase().includes(lowerSearch) ||
+      rel.childName?.toLowerCase().includes(lowerSearch) ||
+      rel.campaignBrand?.toLowerCase().includes(lowerSearch)
     );
   }, [combinedRelationships, searchTerm]);
 
   // Enhanced Strategy statistics
   const strategyStats = useMemo(() => {
-    const totalDealValue = deals.reduce((sum, deal) => sum + (deal['Budget'] || 0), 0); // Always use Budget
+    const totalDealValue = deals.reduce((sum, deal) => sum + (parseFloat(deal['Budget']) || 0), 0);
     const closedWonDeals = deals.filter(deal => {
       const stage = deal['Deal Stage'];
       const isWon = deal['Is Closed Won'];
-      return (stage && typeof stage === 'string' && stage.toLowerCase().includes('won')) || 
-             isWon === true;
+      return isWon === true || (stage && typeof stage === 'string' && stage.toLowerCase().includes('won'));
     }).length;
     
     const openDeals = deals.filter(deal => {
@@ -322,6 +406,11 @@ const HubSpotRelationshipMapper = () => {
              !stage.toLowerCase().includes('closed') && 
              !stage.toLowerCase().includes('lost') &&
              !stage.toLowerCase().includes('won');
+    }).length;
+    
+    const lostDeals = deals.filter(deal => {
+      const stage = deal['Deal Stage'];
+      return stage && typeof stage === 'string' && stage.toLowerCase().includes('lost');
     }).length;
     
     const stats = {
@@ -334,9 +423,12 @@ const HubSpotRelationshipMapper = () => {
       totalBrands: brandMapping.totalBrands,
       closedWonDeals,
       openDeals,
+      lostDeals,
       winRate: deals.length > 0 ? (closedWonDeals / deals.length) * 100 : 0,
       averageDealSize: deals.length > 0 ? totalDealValue / deals.length : 0,
-      pipelineDistribution: {}
+      mappingCoverage: deals.length > 0 ? (directIdMapping.length / deals.length) * 100 : 0,
+      pipelineDistribution: {},
+      stageDistribution: {}
     };
     
     // Calculate pipeline distribution
@@ -344,6 +436,10 @@ const HubSpotRelationshipMapper = () => {
       const pipeline = deal['Pipeline'];
       const pipelineName = (pipeline && typeof pipeline === 'string') ? pipeline : 'Unknown';
       stats.pipelineDistribution[pipelineName] = (stats.pipelineDistribution[pipelineName] || 0) + 1;
+      
+      const stage = deal['Deal Stage'];
+      const stageName = (stage && typeof stage === 'string') ? stage : 'Unknown';
+      stats.stageDistribution[stageName] = (stats.stageDistribution[stageName] || 0) + 1;
     });
     
     return stats;
@@ -360,7 +456,31 @@ const HubSpotRelationshipMapper = () => {
     );
   }
 
-  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Error Loading Data</h2>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <p className="text-sm text-gray-500">
+            Please ensure the CSV files are in the public folder:
+            <br />• /public/tylerdeals2.csv
+            <br />• /public/hubspot-crm-exports-tyler-companies-2025-05-29.csv
+          </p>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 inline-flex items-center gap-2"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#82CA9D', '#FFC658'];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -376,6 +496,11 @@ const HubSpotRelationshipMapper = () => {
               <p className="text-gray-600 mt-2">
                 Comprehensive analysis of {deals.length.toLocaleString()} deals worth ${(strategyStats.totalRevenue / 1000000).toFixed(1)}M across {companies.length} companies
               </p>
+              {dataRefreshTime && (
+                <p className="text-sm text-gray-500 mt-1">
+                  Data loaded at {dataRefreshTime.toLocaleTimeString()}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-4">
               <div className="relative">
@@ -385,9 +510,16 @@ const HubSpotRelationshipMapper = () => {
                   placeholder="Search relationships..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent w-64"
                 />
               </div>
+              <button 
+                onClick={() => window.location.reload()} 
+                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
+                title="Refresh data"
+              >
+                <RefreshCw className="w-5 h-5" />
+              </button>
             </div>
           </div>
         </div>
@@ -396,8 +528,8 @@ const HubSpotRelationshipMapper = () => {
       {/* Strategy Tabs */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-          <div className="border-b border-gray-200">
-            <nav className="flex space-x-8 px-6">
+          <div className="border-b border-gray-200 overflow-x-auto">
+            <nav className="flex space-x-8 px-6 min-w-max">
               {[
                 { id: 'overview', name: 'Overview', icon: TrendingUp },
                 { id: 'direct-ids', name: 'Enhanced ID Mapping', icon: Target },
@@ -408,7 +540,7 @@ const HubSpotRelationshipMapper = () => {
                 <button
                   key={tab.id}
                   onClick={() => setActiveStrategy(tab.id)}
-                  className={`flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm ${
+                  className={`flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${
                     activeStrategy === tab.id
                       ? 'border-indigo-500 text-indigo-600'
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -434,7 +566,7 @@ const HubSpotRelationshipMapper = () => {
                         <p className="text-2xl font-bold">{strategyStats.totalDeals.toLocaleString()}</p>
                         <p className="text-sm text-blue-200">Tyler Master Set</p>
                       </div>
-                      <Users className="w-8 h-8 text-blue-200" />
+                      <FileText className="w-8 h-8 text-blue-200" />
                     </div>
                   </div>
                   
@@ -474,11 +606,65 @@ const HubSpotRelationshipMapper = () => {
                   <div className="bg-gradient-to-r from-indigo-500 to-indigo-600 rounded-lg p-6 text-white">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-indigo-100">Avg Deal Size</p>
-                        <p className="text-2xl font-bold">${(strategyStats.averageDealSize / 1000).toFixed(0)}K</p>
-                        <p className="text-sm text-indigo-200">{strategyStats.openDeals} open deals</p>
+                        <p className="text-indigo-100">Mapping Coverage</p>
+                        <p className="text-2xl font-bold">{strategyStats.mappingCoverage.toFixed(1)}%</p>
+                        <p className="text-sm text-indigo-200">{strategyStats.directMappings} mapped</p>
                       </div>
-                      <TrendingUp className="w-8 h-8 text-indigo-200" />
+                      <Network className="w-8 h-8 text-indigo-200" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Deal Funnel Analysis */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="bg-gray-50 rounded-lg p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold mb-4">Deal Funnel Analysis</h3>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={[
+                        { stage: 'Total Deals', count: strategyStats.totalDeals, color: '#3B82F6' },
+                        { stage: 'Open Deals', count: strategyStats.openDeals, color: '#F59E0B' },
+                        { stage: 'Won Deals', count: strategyStats.closedWonDeals, color: '#10B981' },
+                        { stage: 'Lost Deals', count: strategyStats.lostDeals, color: '#EF4444' }
+                      ]}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="stage" />
+                        <YAxis />
+                        <Tooltip />
+                        <Bar dataKey="count" fill="#4F46E5">
+                          {[
+                            <Cell key="cell-0" fill="#3B82F6" />,
+                            <Cell key="cell-1" fill="#F59E0B" />,
+                            <Cell key="cell-2" fill="#10B981" />,
+                            <Cell key="cell-3" fill="#EF4444" />
+                          ]}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-4">Key Insights</h3>
+                    <div className="space-y-3">
+                      <div className="p-3 bg-white rounded border border-gray-200">
+                        <h4 className="font-medium text-gray-900">Average Deal Size</h4>
+                        <p className="text-2xl font-bold text-indigo-600">
+                          ${(strategyStats.averageDealSize / 1000).toFixed(0)}K
+                        </p>
+                      </div>
+                      <div className="p-3 bg-white rounded border border-gray-200">
+                        <h4 className="font-medium text-gray-900">Open Pipeline</h4>
+                        <p className="text-2xl font-bold text-orange-600">
+                          ${(directIdMapping
+                            .filter(d => !d.isClosedWon && d.dealStage && !d.dealStage.toLowerCase().includes('lost'))
+                            .reduce((sum, d) => sum + d.amount, 0) / 1000000).toFixed(1)}M
+                        </p>
+                      </div>
+                      <div className="p-3 bg-white rounded border border-gray-200">
+                        <h4 className="font-medium text-gray-900">Companies w/ Deals</h4>
+                        <p className="text-2xl font-bold text-purple-600">
+                          {new Set(directIdMapping.map(m => m.companyId)).size}
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -489,7 +675,7 @@ const HubSpotRelationshipMapper = () => {
                     <h3 className="text-lg font-semibold mb-4">Strategy Effectiveness</h3>
                     <ResponsiveContainer width="100%" height={300}>
                       <BarChart data={[
-                        { strategy: 'Enhanced ID Mapping', mappings: strategyStats.directMappings, confidence: 100 },
+                        { strategy: 'ID Mapping', mappings: strategyStats.directMappings, confidence: 100 },
                         { strategy: 'Domain Analysis', mappings: strategyStats.domainRelationships, confidence: 75 },
                         { strategy: 'Brand Attribution', mappings: strategyStats.totalBrands, confidence: 60 },
                         { strategy: 'Revenue Validation', mappings: strategyStats.revenueAccuracy, confidence: 85 }
@@ -498,7 +684,9 @@ const HubSpotRelationshipMapper = () => {
                         <XAxis dataKey="strategy" />
                         <YAxis />
                         <Tooltip />
-                        <Bar dataKey="mappings" fill="#4F46E5" />
+                        <Legend />
+                        <Bar dataKey="mappings" fill="#4F46E5" name="Relationships" />
+                        <Bar dataKey="confidence" fill="#10B981" name="Confidence %" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -520,8 +708,8 @@ const HubSpotRelationshipMapper = () => {
                           dataKey="value"
                           label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                         >
-                          {COLORS.map((color, index) => (
-                            <Cell key={`cell-${index}`} fill={color} />
+                          {Object.entries(strategyStats.pipelineDistribution).map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                           ))}
                         </Pie>
                         <Tooltip />
@@ -547,7 +735,7 @@ const HubSpotRelationshipMapper = () => {
                   </span>
                 </div>
                 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
                   <div className="bg-green-50 p-4 rounded-lg">
                     <h4 className="font-medium text-green-900">Direct Matches</h4>
                     <p className="text-2xl font-bold text-green-600">
@@ -569,6 +757,37 @@ const HubSpotRelationshipMapper = () => {
                     </p>
                     <p className="text-sm text-orange-700">of total deals</p>
                   </div>
+                  <div className="bg-purple-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-purple-900">Unique Companies</h4>
+                    <p className="text-2xl font-bold text-purple-600">
+                      {new Set(directIdMapping.map(m => m.companyId)).size}
+                    </p>
+                    <p className="text-sm text-purple-700">with deals</p>
+                  </div>
+                </div>
+
+                {/* Stage distribution for mapped deals */}
+                <div className="bg-gray-50 rounded-lg p-6 mb-6">
+                  <h3 className="text-lg font-semibold mb-4">Deal Stage Distribution</h3>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart 
+                      data={Object.entries(
+                        directIdMapping.reduce((acc, deal) => {
+                          acc[deal.dealStage] = (acc[deal.dealStage] || 0) + 1;
+                          return acc;
+                        }, {})
+                      ).map(([stage, count]) => ({ stage, count }))
+                      .sort((a, b) => b.count - a.count)
+                      .slice(0, 10)}
+                      layout="horizontal"
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="stage" angle={-45} textAnchor="end" height={100} />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="count" fill="#4F46E5" />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
                 
                 <div className="overflow-x-auto">
@@ -577,43 +796,61 @@ const HubSpotRelationshipMapper = () => {
                       <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deal</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pipeline</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Budget</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Brand</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {filteredRelationships.filter(r => r.strategy === 'Enhanced ID').slice(0, 20).map((mapping, index) => (
+                      {filteredRelationships
+                        .filter(r => r.strategy === 'Enhanced ID')
+                        .slice(0, 50)
+                        .map((mapping, index) => (
                         <tr key={index} className="hover:bg-gray-50">
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-gray-900">{mapping.dealName}</div>
+                            <div className="text-sm font-medium text-gray-900 max-w-xs truncate" title={mapping.dealName}>
+                              {mapping.dealName}
+                            </div>
                             <div className="text-sm text-gray-500">ID: {mapping.dealId}</div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-gray-900">{mapping.companyName}</div>
+                            <div className="text-sm font-medium text-gray-900 max-w-xs truncate" title={mapping.companyName}>
+                              {mapping.companyName}
+                            </div>
                             <div className="text-sm text-gray-500">ID: {mapping.companyId}</div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
-                              {mapping.pipeline || 'N/A'}
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              mapping.isClosedWon 
+                                ? 'bg-green-100 text-green-800'
+                                : mapping.dealStage?.toLowerCase().includes('lost')
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {mapping.dealStage}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                              {mapping.confidence}%
+                            <span className="text-sm text-gray-900">
+                              {mapping.pipeline}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                             ${mapping.amount?.toLocaleString() || '0'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate" title={mapping.campaignBrand}>
                             {mapping.campaignBrand || 'N/A'}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  {filteredRelationships.filter(r => r.strategy === 'Enhanced ID').length > 50 && (
+                    <div className="text-center py-4 text-sm text-gray-500">
+                      Showing 50 of {filteredRelationships.filter(r => r.strategy === 'Enhanced ID').length} mappings
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -627,6 +864,31 @@ const HubSpotRelationshipMapper = () => {
                     {domainMapping.length} relationships found (75% confidence)
                   </span>
                 </div>
+
+                {/* Domain stats */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+                  <div className="bg-blue-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-blue-900">Domain Groups</h4>
+                    <p className="text-2xl font-bold text-blue-600">
+                      {new Set(domainMapping.map(d => d.domain)).size}
+                    </p>
+                    <p className="text-sm text-blue-700">unique domains</p>
+                  </div>
+                  <div className="bg-purple-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-purple-900">Parent Companies</h4>
+                    <p className="text-2xl font-bold text-purple-600">
+                      {new Set(domainMapping.map(d => d.parentId)).size}
+                    </p>
+                    <p className="text-sm text-purple-700">identified</p>
+                  </div>
+                  <div className="bg-orange-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-orange-900">Child Companies</h4>
+                    <p className="text-2xl font-bold text-orange-600">
+                      {new Set(domainMapping.map(d => d.childId)).size}
+                    </p>
+                    <p className="text-sm text-orange-700">linked</p>
+                  </div>
+                </div>
                 
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-gray-200">
@@ -635,11 +897,12 @@ const HubSpotRelationshipMapper = () => {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Parent Company</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Child Company</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Domain</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Parent Deals</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {domainMapping.slice(0, 20).map((rel, index) => (
+                      {domainMapping.slice(0, 50).map((rel, index) => (
                         <tr key={index} className="hover:bg-gray-50">
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm font-medium text-gray-900">{rel.parentName}</div>
@@ -652,6 +915,9 @@ const HubSpotRelationshipMapper = () => {
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             {rel.domain}
                           </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {rel.parentDealCount || 0}
+                          </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
                               {rel.confidence}%
@@ -661,6 +927,11 @@ const HubSpotRelationshipMapper = () => {
                       ))}
                     </tbody>
                   </table>
+                  {domainMapping.length > 50 && (
+                    <div className="text-center py-4 text-sm text-gray-500">
+                      Showing 50 of {domainMapping.length} domain relationships
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -684,17 +955,16 @@ const HubSpotRelationshipMapper = () => {
                   <div className="bg-gray-50 rounded-lg p-6">
                     <h4 className="text-lg font-medium mb-4">Top Brands by Revenue</h4>
                     <ResponsiveContainer width="100%" height={300}>
-                      <BarChart data={Object.entries(brandMapping.brandRevenue)
-                        .sort(([,a], [,b]) => b - a)
-                        .slice(0, 10)
-                        .map(([brand, revenue]) => ({ 
-                          brand: brand.slice(0, 15) + (brand.length > 15 ? '...' : ''), 
-                          revenue,
-                          deals: brandMapping.brandDealCounts[brand] || 0
-                        }))
-                      }>
+                      <BarChart data={brandMapping.brandMetrics.slice(0, 10)}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="brand" angle={-45} textAnchor="end" height={100} />
+                        <XAxis 
+                          dataKey="brand" 
+                          angle={-45} 
+                          textAnchor="end" 
+                          height={100}
+                          tick={{ fontSize: 12 }}
+                          interval={0}
+                        />
                         <YAxis />
                         <Tooltip 
                           formatter={(value, name) => [
@@ -708,30 +978,85 @@ const HubSpotRelationshipMapper = () => {
                   </div>
 
                   <div className="bg-gray-50 rounded-lg p-6">
-                    <h4 className="text-lg font-medium mb-4">Brand Portfolio Analysis</h4>
-                    <div className="space-y-3 max-h-[300px] overflow-y-auto">
-                      {Object.entries(brandMapping.brandRevenue)
-                        .sort(([,a], [,b]) => b - a)
-                        .slice(0, 15)
-                        .map(([brand, revenue]) => (
-                          <div key={brand} className="flex justify-between items-center p-3 bg-white rounded border">
-                            <div className="flex-1">
-                              <div className="font-medium text-gray-900 truncate">{brand}</div>
-                              <div className="text-sm text-gray-500">
-                                {brandMapping.brandDealCounts[brand] || 0} deals • {brandMapping.brandCompanies[brand]?.size || 0} companies
+                    <h4 className="text-lg font-medium mb-4">Brand Win Rate Analysis</h4>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <ScatterChart data={brandMapping.brandMetrics.filter(b => b.dealCount >= 5)}>
+                        <CartesianGrid />
+                        <XAxis dataKey="dealCount" name="Deal Count" />
+                        <YAxis dataKey="winRate" name="Win Rate %" />
+                        <Tooltip 
+                          cursor={{ strokeDasharray: '3 3' }}
+                          content={({ active, payload }) => {
+                            if (active && payload && payload[0]) {
+                              const data = payload[0].payload;
+                              return (
+                                <div className="bg-white p-3 border rounded shadow-lg">
+                                  <p className="font-medium">{data.brand}</p>
+                                  <p className="text-sm">Win Rate: {data.winRate.toFixed(1)}%</p>
+                                  <p className="text-sm">Deals: {data.dealCount}</p>
+                                  <p className="text-sm">Revenue: ${(data.revenue / 1000).toFixed(0)}K</p>
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                        <Scatter name="Brands" dataKey="winRate" fill="#10B981" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Brand Portfolio Analysis */}
+                <div className="bg-gray-50 rounded-lg p-6">
+                  <h4 className="text-lg font-medium mb-4">Brand Portfolio Analysis</h4>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-white">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Brand</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Revenue</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deals</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Deal Size</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Win Rate</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Companies</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {brandMapping.brandMetrics.slice(0, 20).map((brand, index) => (
+                          <tr key={index} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="text-sm font-medium text-gray-900 max-w-xs truncate" title={brand.brand}>
+                                {brand.brand}
                               </div>
-                            </div>
-                            <div className="text-right ml-4">
-                              <div className="font-semibold text-purple-600">
-                                ${(revenue / 1000).toFixed(0)}K
-                              </div>
-                              <div className="text-sm text-gray-500">
-                                ${(revenue / (brandMapping.brandDealCounts[brand] || 1) / 1000).toFixed(0)}K avg
-                              </div>
-                            </div>
-                          </div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              ${(brand.revenue / 1000).toFixed(0)}K
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {brand.dealCount}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              ${(brand.avgDealSize / 1000).toFixed(0)}K
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                brand.winRate > 50 
+                                  ? 'bg-green-100 text-green-800'
+                                  : brand.winRate > 25
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : 'bg-red-100 text-red-800'
+                              }`}>
+                                {brand.winRate.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {brand.companyCount}
+                            </td>
+                          </tr>
                         ))}
-                    </div>
+                      </tbody>
+                    </table>
                   </div>
                 </div>
 
@@ -746,12 +1071,18 @@ const HubSpotRelationshipMapper = () => {
                         const pipelines = brandMapping.brandPipelines[brand] || {};
                         return (
                           <div key={brand} className="bg-white p-4 rounded border">
-                            <h5 className="font-medium text-gray-900 truncate mb-2">{brand}</h5>
+                            <h5 className="font-medium text-gray-900 truncate mb-2" title={brand}>{brand}</h5>
+                            <p className="text-sm text-gray-600 mb-2">
+                              Revenue: ${(revenue / 1000).toFixed(0)}K
+                            </p>
                             <div className="space-y-1">
-                              {Object.entries(pipelines).map(([pipeline, count]) => (
+                              {Object.entries(pipelines)
+                                .sort(([,a], [,b]) => b - a)
+                                .slice(0, 5)
+                                .map(([pipeline, count]) => (
                                 <div key={pipeline} className="flex justify-between text-sm">
-                                  <span className="text-gray-600 truncate">{pipeline}</span>
-                                  <span className="font-medium">{count}</span>
+                                  <span className="text-gray-600 truncate flex-1">{pipeline}</span>
+                                  <span className="font-medium ml-2">{count}</span>
                                 </div>
                               ))}
                             </div>
@@ -788,11 +1119,21 @@ const HubSpotRelationshipMapper = () => {
                         <YAxis dataKey="accuracy" name="Accuracy %" />
                         <Tooltip 
                           cursor={{ strokeDasharray: '3 3' }}
-                          formatter={(value, name) => [
-                            name === 'accuracy' ? `${value.toFixed(1)}%` : value,
-                            name === 'accuracy' ? 'Accuracy' : 'Deal Count'
-                          ]}
-                          labelFormatter={(label) => `Company: ${revenueValidation.find(r => r.dealCount === label)?.companyName || 'Unknown'}`}
+                          content={({ active, payload }) => {
+                            if (active && payload && payload[0]) {
+                              const data = payload[0].payload;
+                              return (
+                                <div className="bg-white p-3 border rounded shadow-lg">
+                                  <p className="font-medium">{data.companyName}</p>
+                                  <p className="text-sm">Accuracy: {data.accuracy.toFixed(1)}%</p>
+                                  <p className="text-sm">Deals: {data.dealCount}</p>
+                                  <p className="text-sm">Declared: ${(data.declaredRevenue / 1000).toFixed(0)}K</p>
+                                  <p className="text-sm">Calculated: ${(data.calculatedRevenue / 1000).toFixed(0)}K</p>
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
                         />
                         <Scatter name="Companies" dataKey="accuracy" fill="#F59E0B" />
                       </ScatterChart>
@@ -803,12 +1144,14 @@ const HubSpotRelationshipMapper = () => {
                     <h4 className="text-lg font-medium mb-4">Win Rate Distribution</h4>
                     <ResponsiveContainer width="100%" height={300}>
                       <BarChart data={revenueValidation
+                        .filter(c => c.dealCount >= 3)
                         .sort((a, b) => b.winRate - a.winRate)
                         .slice(0, 10)
                         .map(company => ({
-                          name: company.companyName.slice(0, 15) + (company.companyName.length > 15 ? '...' : ''),
+                          name: company.companyName.slice(0, 20) + (company.companyName.length > 20 ? '...' : ''),
                           winRate: company.winRate,
-                          deals: company.dealCount
+                          deals: company.dealCount,
+                          wonDeals: company.wonDeals
                         }))
                       }>
                         <CartesianGrid strokeDasharray="3 3" />
@@ -816,11 +1159,43 @@ const HubSpotRelationshipMapper = () => {
                         <YAxis />
                         <Tooltip formatter={(value, name) => [
                           name === 'winRate' ? `${value.toFixed(1)}%` : value,
-                          name === 'winRate' ? 'Win Rate' : 'Total Deals'
+                          name === 'winRate' ? 'Win Rate' : name === 'deals' ? 'Total Deals' : 'Won Deals'
                         ]} />
                         <Bar dataKey="winRate" fill="#10B981" />
                       </BarChart>
                     </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Revenue Summary Stats */}
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                  <div className="bg-green-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-green-900">High Accuracy</h4>
+                    <p className="text-2xl font-bold text-green-600">
+                      {revenueValidation.filter(r => r.accuracy > 80).length}
+                    </p>
+                    <p className="text-sm text-green-700">companies (80%)</p>
+                  </div>
+                  <div className="bg-yellow-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-yellow-900">Total Potential</h4>
+                    <p className="text-2xl font-bold text-yellow-600">
+                      ${(revenueValidation.reduce((sum, r) => sum + r.totalPotential, 0) / 1000000).toFixed(1)}M
+                    </p>
+                    <p className="text-sm text-yellow-700">all deals</p>
+                  </div>
+                  <div className="bg-blue-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-blue-900">Avg Win Rate</h4>
+                    <p className="text-2xl font-bold text-blue-600">
+                      {(revenueValidation.reduce((sum, r) => sum + r.winRate, 0) / revenueValidation.length).toFixed(1)}%
+                    </p>
+                    <p className="text-sm text-blue-700">across companies</p>
+                  </div>
+                  <div className="bg-purple-50 p-4 rounded-lg">
+                    <h4 className="font-medium text-purple-900">Avg Deal Size</h4>
+                    <p className="text-2xl font-bold text-purple-600">
+                      ${(revenueValidation.reduce((sum, r) => sum + r.avgDealSize, 0) / revenueValidation.length / 1000).toFixed(0)}K
+                    </p>
+                    <p className="text-sm text-purple-700">per company</p>
                   </div>
                 </div>
 
@@ -831,20 +1206,25 @@ const HubSpotRelationshipMapper = () => {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deals</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Win Rate</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Declared Revenue</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calculated Revenue</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Declared Rev</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calculated Rev</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Accuracy</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Deal</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
                       {revenueValidation
                         .sort((a, b) => b.calculatedRevenue - a.calculatedRevenue)
-                        .slice(0, 15)
+                        .slice(0, 50)
                         .map((validation, index) => (
                         <tr key={index} className="hover:bg-gray-50">
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-gray-900">{validation.companyName}</div>
-                            <div className="text-sm text-gray-500">{validation.wonDeals}W / {validation.openDeals}O</div>
+                            <div className="text-sm font-medium text-gray-900 max-w-xs truncate" title={validation.companyName}>
+                              {validation.companyName}
+                            </div>
+                            <div className="text-sm text-gray-500">
+                              {validation.wonDeals}W / {validation.openDeals}O / {validation.lostDeals}L
+                            </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                             {validation.dealCount}
@@ -877,10 +1257,18 @@ const HubSpotRelationshipMapper = () => {
                               {validation.accuracy.toFixed(1)}%
                             </span>
                           </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            ${(validation.avgDealSize / 1000).toFixed(0)}K
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  {revenueValidation.length > 50 && (
+                    <div className="text-center py-4 text-sm text-gray-500">
+                      Showing 50 of {revenueValidation.length} companies
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -899,20 +1287,32 @@ const HubSpotRelationshipMapper = () => {
             <div className="p-4 bg-blue-50 rounded-lg">
               <h4 className="font-medium text-blue-900">Immediate: Enhanced ID Mapping</h4>
               <p className="text-sm text-blue-700 mt-2">
-                Leverage {strategyStats.directMappings} direct ID mappings with 100% confidence across {strategyStats.totalDeals.toLocaleString()} deals.
+                Leverage {strategyStats.directMappings} direct ID mappings with 100% confidence covering {strategyStats.mappingCoverage.toFixed(1)}% of deals.
               </p>
+              <ul className="text-sm text-blue-600 mt-2 space-y-1">
+                <li>• {new Set(directIdMapping.map(m => m.companyId)).size} companies with deals</li>
+                <li>• ${(directIdMapping.filter(d => !d.isClosedWon).reduce((s, d) => s + d.amount, 0) / 1000000).toFixed(1)}M open pipeline</li>
+              </ul>
             </div>
             <div className="p-4 bg-purple-50 rounded-lg">
               <h4 className="font-medium text-purple-900">Short-term: Brand Portfolio Optimization</h4>
               <p className="text-sm text-purple-700 mt-2">
-                Optimize {strategyStats.totalBrands} brand relationships with ${(strategyStats.totalRevenue / 1000000).toFixed(1)}M budget-based revenue opportunity.
+                Optimize {strategyStats.totalBrands} brand relationships with ${(strategyStats.totalRevenue / 1000000).toFixed(1)}M budget-based revenue.
               </p>
+              <ul className="text-sm text-purple-600 mt-2 space-y-1">
+                <li>• Focus on top 10 brands: ${(brandMapping.brandMetrics.slice(0, 10).reduce((s, b) => s + b.revenue, 0) / 1000000).toFixed(1)}M</li>
+                <li>• Average win rate: {(brandMapping.brandMetrics.slice(0, 10).reduce((s, b) => s + b.winRate, 0) / 10).toFixed(1)}%</li>
+              </ul>
             </div>
             <div className="p-4 bg-orange-50 rounded-lg">
               <h4 className="font-medium text-orange-900">Long-term: Pipeline Enhancement</h4>
               <p className="text-sm text-orange-700 mt-2">
-                Improve {strategyStats.winRate.toFixed(1)}% win rate across {strategyStats.openDeals} open deals using direct company associations.
+                Improve {strategyStats.winRate.toFixed(1)}% win rate across {strategyStats.openDeals} open deals using insights.
               </p>
+              <ul className="text-sm text-orange-600 mt-2 space-y-1">
+                <li>• {revenueValidation.filter(r => r.winRate > 50).length} high-performing companies</li>
+                <li>• ${(strategyStats.averageDealSize / 1000).toFixed(0)}K average deal size</li>
+              </ul>
             </div>
           </div>
         </div>
