@@ -276,81 +276,76 @@ const HubSpotRelationshipMapper = () => {
     };
   }, [deals]);
 
-  // Strategy 4: Enhanced Revenue Validation
+  // Strategy 4: Enhanced Revenue Validation - Updated for Associated Company column
   const revenueValidation = useMemo(() => {
     const companyDealAnalysis = {};
     
     deals.forEach(deal => {
-      const primaryCompanyId = deal['Associated Company IDs (Primary)'];
-      const dealRevenue = parseFloat(deal['Budget']) || 0;
+      const associatedCompaniesRaw = deal['Associated Company'];
+      const dealMediaBudget = parseFloat(deal['Budget']) || 0;
+      const dealPOAmount = parseFloat(deal['Amount']) || 0;
       const dealStage = deal['Deal Stage'] || 'Unknown';
       const isClosedWon = deal['Is Closed Won'] === true || (dealStage && dealStage.toLowerCase().includes('won'));
       
-      if (primaryCompanyId !== undefined && primaryCompanyId !== null && String(primaryCompanyId).trim() !== '') {
-        const company = companies.find(c => String(c['Record ID']) === String(primaryCompanyId));
-        
-        if (company) {
-          const companyId = company['Record ID'];
-          
-          if (!companyDealAnalysis[companyId]) {
-            companyDealAnalysis[companyId] = {
-              companyName: company['Company name'] || 'Unnamed Company',
-              declaredRevenue: parseFloat(company['Total Revenue']) || 0,
-              calculatedRevenue: 0,
-              dealCount: 0,
-              wonDeals: 0,
-              openDeals: 0,
-              lostDeals: 0,
-              totalPotential: 0,
-              deals: []
-            };
-          }
-          
-          companyDealAnalysis[companyId].calculatedRevenue += dealRevenue;
-          companyDealAnalysis[companyId].totalPotential += dealRevenue;
-          companyDealAnalysis[companyId].dealCount += 1;
-          companyDealAnalysis[companyId].deals.push({
-            name: deal['Deal Name'] || 'Unnamed Deal',
-            stage: dealStage,
-            revenue: dealRevenue,
-            closeDate: deal['Close Date']
-          });
-          
-          if (isClosedWon) {
-            companyDealAnalysis[companyId].wonDeals += 1;
-          } else if (dealStage && dealStage.toLowerCase().includes('lost')) {
-            companyDealAnalysis[companyId].lostDeals += 1;
-          } else {
-            companyDealAnalysis[companyId].openDeals += 1;
-          }
+      // Parse associated companies from semicolon-separated string
+      const associatedCompanies = (associatedCompaniesRaw && typeof associatedCompaniesRaw === 'string') 
+        ? associatedCompaniesRaw.split(';').map(c => c.trim()).filter(c => c !== '') 
+        : [];
+      
+      // For each company in the associated companies list
+      associatedCompanies.forEach(companyName => {
+        if (!companyDealAnalysis[companyName]) {
+          companyDealAnalysis[companyName] = {
+            companyName: companyName,
+            totalMediaBudget: 0,
+            totalPOAmount: 0,
+            dealCount: 0,
+            wonDeals: 0,
+            openDeals: 0,
+            lostDeals: 0,
+            deals: []
+          };
         }
-      }
+        
+        // Add the full amounts to each company
+        companyDealAnalysis[companyName].totalMediaBudget += dealMediaBudget;
+        companyDealAnalysis[companyName].totalPOAmount += dealPOAmount;
+        companyDealAnalysis[companyName].dealCount += 1;
+        companyDealAnalysis[companyName].deals.push({
+          name: deal['Deal Name'] || 'Unnamed Deal',
+          stage: dealStage,
+          mediaBudget: dealMediaBudget,
+          poAmount: dealPOAmount,
+          closeDate: deal['Close Date']
+        });
+        
+        if (isClosedWon) {
+          companyDealAnalysis[companyName].wonDeals += 1;
+        } else if (dealStage && dealStage.toLowerCase().includes('lost')) {
+          companyDealAnalysis[companyName].lostDeals += 1;
+        } else {
+          companyDealAnalysis[companyName].openDeals += 1;
+        }
+      });
     });
     
     // Calculate validation metrics
-    return Object.entries(companyDealAnalysis).map(([companyId, analysis]) => {
-      const variance = Math.abs(analysis.declaredRevenue - analysis.calculatedRevenue);
-      const accuracy = analysis.declaredRevenue > 0 ? 
-        Math.max(0, 100 - ((variance / analysis.declaredRevenue) * 100)) : 0;
-      
+    return Object.entries(companyDealAnalysis).map(([companyName, analysis]) => {
       return {
-        companyId: parseInt(companyId),
         companyName: analysis.companyName,
-        declaredRevenue: analysis.declaredRevenue,
-        calculatedRevenue: analysis.calculatedRevenue,
-        totalPotential: analysis.totalPotential,
-        variance,
-        accuracy,
+        totalMediaBudget: analysis.totalMediaBudget,
+        totalPOAmount: analysis.totalPOAmount,
         dealCount: analysis.dealCount,
         wonDeals: analysis.wonDeals,
         openDeals: analysis.openDeals,
         lostDeals: analysis.lostDeals,
         winRate: analysis.dealCount > 0 ? (analysis.wonDeals / analysis.dealCount) * 100 : 0,
-        avgDealSize: analysis.dealCount > 0 ? analysis.calculatedRevenue / analysis.dealCount : 0,
+        avgPOAmount: analysis.dealCount > 0 ? analysis.totalPOAmount / analysis.dealCount : 0,
+        avgMediaBudget: analysis.dealCount > 0 ? analysis.totalMediaBudget / analysis.dealCount : 0,
         deals: analysis.deals
       };
-    }).filter(item => item.calculatedRevenue > 0 || item.totalPotential > 0);
-  }, [deals, companies]);
+    }).filter(item => item.totalMediaBudget > 0 || item.totalPOAmount > 0);
+  }, [deals]);
 
   // Combined relationship analysis
   const combinedRelationships = useMemo(() => {
@@ -418,7 +413,7 @@ const HubSpotRelationshipMapper = () => {
       totalCompanies: companies.length,
       directMappings: directIdMapping.length,
       domainRelationships: domainMapping.length,
-      revenueAccuracy: revenueValidation.filter(r => r.accuracy > 80).length,
+      revenueAccuracy: revenueValidation.filter(r => r.winRate > 50).length,
       totalRevenue: totalDealValue,
       totalBrands: brandMapping.totalBrands,
       closedWonDeals,
@@ -1094,7 +1089,7 @@ const HubSpotRelationshipMapper = () => {
               </div>
             )}
 
-            {/* Revenue Validation Tab */}
+            {/* Revenue Validation Tab - Updated */}
             {activeStrategy === 'revenue-validation' && (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
@@ -1111,12 +1106,12 @@ const HubSpotRelationshipMapper = () => {
                 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <div className="bg-gray-50 rounded-lg p-6">
-                    <h4 className="text-lg font-medium mb-4">Revenue Accuracy vs Deal Count</h4>
+                    <h4 className="text-lg font-medium mb-4">Media Budget vs Deal Count</h4>
                     <ResponsiveContainer width="100%" height={300}>
                       <ScatterChart data={revenueValidation}>
                         <CartesianGrid />
                         <XAxis dataKey="dealCount" name="Deal Count" />
-                        <YAxis dataKey="accuracy" name="Accuracy %" />
+                        <YAxis dataKey="totalMediaBudget" name="Total Media Budget" tickFormatter={(value) => `$${(value / 1000).toFixed(0)}K`} />
                         <Tooltip 
                           cursor={{ strokeDasharray: '3 3' }}
                           content={({ active, payload }) => {
@@ -1125,17 +1120,17 @@ const HubSpotRelationshipMapper = () => {
                               return (
                                 <div className="bg-white p-3 border rounded shadow-lg">
                                   <p className="font-medium">{data.companyName}</p>
-                                  <p className="text-sm">Accuracy: {data.accuracy.toFixed(1)}%</p>
                                   <p className="text-sm">Deals: {data.dealCount}</p>
-                                  <p className="text-sm">Declared: ${(data.declaredRevenue / 1000).toFixed(0)}K</p>
-                                  <p className="text-sm">Calculated: ${(data.calculatedRevenue / 1000).toFixed(0)}K</p>
+                                  <p className="text-sm">Media Budget: ${(data.totalMediaBudget / 1000).toFixed(0)}K</p>
+                                  <p className="text-sm">PO Amount: ${(data.totalPOAmount / 1000).toFixed(0)}K</p>
+                                  <p className="text-sm">Win Rate: {data.winRate.toFixed(1)}%</p>
                                 </div>
                               );
                             }
                             return null;
                           }}
                         />
-                        <Scatter name="Companies" dataKey="accuracy" fill="#F59E0B" />
+                        <Scatter name="Companies" dataKey="totalMediaBudget" fill="#F59E0B" />
                       </ScatterChart>
                     </ResponsiveContainer>
                   </div>
@@ -1170,16 +1165,16 @@ const HubSpotRelationshipMapper = () => {
                 {/* Revenue Summary Stats */}
                 <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                   <div className="bg-green-50 p-4 rounded-lg">
-                    <h4 className="font-medium text-green-900">High Accuracy</h4>
+                    <h4 className="font-medium text-green-900">Total Media Budget</h4>
                     <p className="text-2xl font-bold text-green-600">
-                      {revenueValidation.filter(r => r.accuracy > 80).length}
+                      ${(revenueValidation.reduce((sum, r) => sum + r.totalMediaBudget, 0) / 1000000).toFixed(1)}M
                     </p>
-                    <p className="text-sm text-green-700">companies (80%)</p>
+                    <p className="text-sm text-green-700">across all companies</p>
                   </div>
                   <div className="bg-yellow-50 p-4 rounded-lg">
-                    <h4 className="font-medium text-yellow-900">Total Potential</h4>
+                    <h4 className="font-medium text-yellow-900">Total PO Amount</h4>
                     <p className="text-2xl font-bold text-yellow-600">
-                      ${(revenueValidation.reduce((sum, r) => sum + r.totalPotential, 0) / 1000000).toFixed(1)}M
+                      ${(revenueValidation.reduce((sum, r) => sum + r.totalPOAmount, 0) / 1000000).toFixed(1)}M
                     </p>
                     <p className="text-sm text-yellow-700">all deals</p>
                   </div>
@@ -1191,9 +1186,9 @@ const HubSpotRelationshipMapper = () => {
                     <p className="text-sm text-blue-700">across companies</p>
                   </div>
                   <div className="bg-purple-50 p-4 rounded-lg">
-                    <h4 className="font-medium text-purple-900">Avg Deal Size</h4>
+                    <h4 className="font-medium text-purple-900">Avg PO Amount</h4>
                     <p className="text-2xl font-bold text-purple-600">
-                      ${(revenueValidation.reduce((sum, r) => sum + r.avgDealSize, 0) / revenueValidation.length / 1000).toFixed(0)}K
+                      ${(revenueValidation.reduce((sum, r) => sum + r.avgPOAmount, 0) / revenueValidation.length / 1000).toFixed(0)}K
                     </p>
                     <p className="text-sm text-purple-700">per company</p>
                   </div>
@@ -1206,15 +1201,15 @@ const HubSpotRelationshipMapper = () => {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Deals</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Win Rate</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Declared Rev</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calculated Rev</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Accuracy</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Deal</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Media Budget</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total PO Amount</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Media Budget</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg PO Amount</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
                       {revenueValidation
-                        .sort((a, b) => b.calculatedRevenue - a.calculatedRevenue)
+                        .sort((a, b) => b.totalMediaBudget - a.totalMediaBudget)
                         .slice(0, 50)
                         .map((validation, index) => (
                         <tr key={index} className="hover:bg-gray-50">
@@ -1241,24 +1236,16 @@ const HubSpotRelationshipMapper = () => {
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            ${validation.declaredRevenue.toLocaleString()}
+                            ${validation.totalMediaBudget.toLocaleString()}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            ${validation.calculatedRevenue.toLocaleString()}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                              validation.accuracy > 80 
-                                ? 'bg-green-100 text-green-800'
-                                : validation.accuracy > 50
-                                ? 'bg-yellow-100 text-yellow-800'
-                                : 'bg-red-100 text-red-800'
-                            }`}>
-                              {validation.accuracy.toFixed(1)}%
-                            </span>
+                            ${validation.totalPOAmount.toLocaleString()}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            ${(validation.avgDealSize / 1000).toFixed(0)}K
+                            ${(validation.avgMediaBudget / 1000).toFixed(0)}K
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            ${(validation.avgPOAmount / 1000).toFixed(0)}K
                           </td>
                         </tr>
                       ))}
