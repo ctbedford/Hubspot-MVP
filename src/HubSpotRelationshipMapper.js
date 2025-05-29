@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter, LineChart, Line } from 'recharts';
-import { Search, Users, Building, DollarSign, Target, Network, AlertCircle, CheckCircle, TrendingUp, Filter, FileText, RefreshCw } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ScatterChart, Scatter } from 'recharts';
+import { Search, Building, DollarSign, Target, Network, AlertCircle, CheckCircle, TrendingUp, FileText, RefreshCw } from 'lucide-react';
 import Papa from 'papaparse';
 
 const HubSpotRelationshipMapper = () => {
@@ -1021,9 +1021,7 @@ const HubSpotRelationshipMapper = () => {
                         {brandMapping.brandMetrics.slice(0, 20).map((brand, index) => (
                           <tr key={index} className="hover:bg-gray-50">
                             <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="text-sm font-medium text-gray-900 max-w-xs truncate" title={brand.brand}>
-                                {brand.brand}
-                              </div>
+                              <div className="text-sm font-medium text-gray-900">{brand.brand}</div>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                               ${(brand.revenue / 1000).toFixed(0)}K
